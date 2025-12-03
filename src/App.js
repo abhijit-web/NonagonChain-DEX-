@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { TrendingUp, TrendingDown, Zap, Lock, DollarSign, Activity, BarChart3, Bot, Wallet, PiggyBank } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 export default function NonagonPrototype() {
   const [activeTab, setActiveTab] = useState('trading');
@@ -37,6 +38,7 @@ export default function NonagonPrototype() {
   const [collateralEnabled, setCollateralEnabled] = useState({
     usdc: false, usdt: false, n9g: false, dai: false, eth: false
   });
+  const [plHistory, setPlHistory] = useState([{ time: '0:00', value: 0 }]);
 
   // Generate realistic orderbook
   useEffect(() => {
@@ -131,26 +133,61 @@ export default function NonagonPrototype() {
     return () => clearInterval(lendingInterval);
   }, [lendingPools]);
 
+  // P&L History tracking
+  useEffect(() => {
+    const historyInterval = setInterval(() => {
+      const currentTime = new Date().toLocaleTimeString('en-US', { 
+        hour: '2-digit', 
+        minute: '2-digit',
+        hour12: false 
+      });
+      
+      setPlHistory(prev => {
+        const newHistory = [...prev, { time: currentTime, value: totalEarnings }];
+        // Keep last 20 data points
+        return newHistory.slice(-20);
+      });
+    }, 5000); // Update every 5 seconds
+    
+    return () => clearInterval(historyInterval);
+  }, [totalEarnings]);
+
   const executeTrade = (side, price, amount) => {
-    const fee = side === 'maker' ? -0.0001 : 0.0003; // Maker rebate or taker fee
+    const fee = 0.0003; // Taker fee (0.03%)
     const total = price * amount;
-    const feeAmount = total * Math.abs(fee);
+    const feeAmount = total * fee;
     
     if (side === 'buy') {
-      if (balance.usdt >= total + feeAmount) {
+      // Buy USDC with USDT
+      const totalCost = total + feeAmount;
+      if (balance.usdt >= totalCost) {
         setBalance(prev => ({
           ...prev,
-          usdt: prev.usdt - total - feeAmount,
+          usdt: prev.usdt - totalCost,
           usdc: prev.usdc + amount
         }));
         
-        const profit = fee < 0 ? feeAmount : -feeAmount;
-        setTotalEarnings(prev => prev + profit);
+        setTradeHistory(prev => [{
+          time: new Date().toLocaleTimeString(),
+          strategy: 'Manual Buy',
+          profit: (-feeAmount).toFixed(2),
+          pair: selectedPair
+        }, ...prev].slice(0, 20));
+      }
+    } else if (side === 'sell') {
+      // Sell USDC for USDT
+      if (balance.usdc >= amount) {
+        const totalReceived = total - feeAmount;
+        setBalance(prev => ({
+          ...prev,
+          usdc: prev.usdc - amount,
+          usdt: prev.usdt + totalReceived
+        }));
         
         setTradeHistory(prev => [{
           time: new Date().toLocaleTimeString(),
-          strategy: 'Manual Trade',
-          profit: profit.toFixed(2),
+          strategy: 'Manual Sell',
+          profit: (-feeAmount).toFixed(2),
           pair: selectedPair
         }, ...prev].slice(0, 20));
       }
@@ -387,7 +424,7 @@ export default function NonagonPrototype() {
             {activeTab === 'lending' && <LendingPanel balance={balance} lendingPools={lendingPools} collateralEnabled={collateralEnabled} supplyAsset={supplyAsset} withdrawAsset={withdrawAsset} borrowAsset={borrowAsset} repayAsset={repayAsset} toggleCollateral={toggleCollateral} calculateBorrowingPower={calculateBorrowingPower} calculateTotalSupplied={calculateTotalSupplied} calculateTotalBorrowed={calculateTotalBorrowed} calculateHealthFactor={calculateHealthFactor} />}
             {activeTab === 'staking' && <StakingPanel balance={balance} stakedTokens={stakedTokens} lockPeriod={lockPeriod} setLockPeriod={setLockPeriod} stakeTokens={stakeTokens} unstakeTokens={unstakeTokens} calculateAPY={calculateAPY} />}
             {activeTab === 'hft' && <HFTPanel hftEnabled={hftEnabled} setHftEnabled={setHftEnabled} hftProfit={hftProfit} />}
-            {activeTab === 'portfolio' && <PortfolioPanel balance={balance} stakedTokens={stakedTokens} totalEarnings={totalEarnings} />}
+            {activeTab === 'portfolio' && <PortfolioPanel balance={balance} stakedTokens={stakedTokens} totalEarnings={totalEarnings} plHistory={plHistory} />}
           </div>
 
           {/* Sidebar */}
@@ -479,6 +516,9 @@ function TradingPanel({ orderbook, executeTrade, selectedPair, setSelectedPair }
             Market Sell
           </button>
         </div>
+        <p className="text-xs text-gray-400 mt-2">
+          Buy uses USDT → Get USDC | Sell uses USDC → Get USDT | Fee: Taker 0.03%
+        </p>
         <p className="text-xs text-gray-400 mt-2">Fee: Taker 0.03% | Maker -0.01% (rebate)</p>
       </div>
     </div>
@@ -801,7 +841,7 @@ function HFTPanel({ hftEnabled, setHftEnabled, hftProfit }) {
   );
 }
 
-function PortfolioPanel({ balance, stakedTokens, totalEarnings }) {
+function PortfolioPanel({ balance, stakedTokens, totalEarnings, plHistory }) {
   const totalStakedValue = stakedTokens.n9g * 1.2 + stakedTokens.usdc + stakedTokens.usdt;
   const totalValue = balance.usdc + balance.usdt + (balance.n9g * 1.2) + totalStakedValue;
 
@@ -814,6 +854,75 @@ function PortfolioPanel({ balance, stakedTokens, totalEarnings }) {
         <div className="text-4xl font-bold text-white">${totalValue.toFixed(2)}</div>
         <div className="text-emerald-100 text-sm mt-2">
           Total Earnings: <span className="font-semibold">${totalEarnings.toFixed(2)}</span>
+        </div>
+      </div>
+
+      {/* P&L Chart */}
+      <div className="bg-slate-700 p-6 rounded-xl mb-6">
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-white font-semibold">P&L Movement</h3>
+          <div className="flex items-center gap-2">
+            {totalEarnings >= 0 ? (
+              <TrendingUp className="text-green-400" size={20} />
+            ) : (
+              <TrendingDown className="text-red-400" size={20} />
+            )}
+            <span className={totalEarnings >= 0 ? 'text-green-400' : 'text-red-400'}>
+              ${Math.abs(totalEarnings).toFixed(2)}
+            </span>
+          </div>
+        </div>
+        
+        <ResponsiveContainer width="100%" height={250}>
+          <LineChart data={plHistory}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+            <XAxis 
+              dataKey="time" 
+              stroke="#9CA3AF"
+              tick={{ fill: '#9CA3AF', fontSize: 12 }}
+            />
+            <YAxis 
+              stroke="#9CA3AF"
+              tick={{ fill: '#9CA3AF', fontSize: 12 }}
+              tickFormatter={(value) => `${value.toFixed(0)}`}
+            />
+            <Tooltip 
+              contentStyle={{ 
+                backgroundColor: '#1e293b', 
+                border: '1px solid #475569',
+                borderRadius: '8px'
+              }}
+              labelStyle={{ color: '#e5e7eb' }}
+              formatter={(value) => [`${value.toFixed(2)}`, 'P&L']}
+            />
+            <Line 
+              type="monotone" 
+              dataKey="value" 
+              stroke={totalEarnings >= 0 ? '#10b981' : '#ef4444'}
+              strokeWidth={3}
+              dot={false}
+              animationDuration={300}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+        
+        <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+          <div className="bg-slate-600 p-3 rounded-lg">
+            <div className="text-gray-400 text-xs">Starting Value</div>
+            <div className="text-white font-semibold">${plHistory[0]?.value.toFixed(2) || '0.00'}</div>
+          </div>
+          <div className="bg-slate-600 p-3 rounded-lg">
+            <div className="text-gray-400 text-xs">Current P&L</div>
+            <div className={`font-semibold ${totalEarnings >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              ${totalEarnings.toFixed(2)}
+            </div>
+          </div>
+          <div className="bg-slate-600 p-3 rounded-lg">
+            <div className="text-gray-400 text-xs">Change</div>
+            <div className={`font-semibold ${totalEarnings >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {totalEarnings >= 0 ? '+' : ''}{((totalEarnings / (totalValue - totalEarnings || 1)) * 100).toFixed(2)}%
+            </div>
+          </div>
         </div>
       </div>
 
